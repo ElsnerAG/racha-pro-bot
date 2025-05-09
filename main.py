@@ -1,7 +1,15 @@
 import os
 import requests
 from datetime import datetime, timedelta
-from config import MARKETS, DAYS_AHEAD, WEIGHTS, TARGET_PARLAY, MAX_COMBINED_ODD
+from config import (
+    MARKETS,
+    DAYS_AHEAD,
+    WEIGHTS,
+    TARGET_PARLAY,
+    MAX_COMBINED_ODD,
+    MIN_SCORE
+)
+
 
 def send_telegram(text: str):
     """Envía un mensaje formateado a tu bot de Telegram."""
@@ -14,47 +22,81 @@ def send_telegram(text: str):
         "parse_mode": "Markdown"
     })
 
+
 def fetch_api_events(sport_key: str):
-    """Trae cuotas y mercados de tu API (TheOddsAPI)."""
+    """
+    Trae cuotas y mercados de tu API (TheOddsAPI u otra).
+    Si la respuesta no es una lista, devuelve [] para evitar errores.
+    """
     key = os.environ["ODDS_API_KEY"]
     url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds"
     params = {
         "apiKey": key,
         "regions": "eu,us",
-        "markets": ",".join([m["key"] for m in MARKETS[sport_key]]),
+        "markets": ",".join([m["key"] for m in MARKETS.get(sport_key, [])]),
         "oddsFormat": "decimal",
         "dateFormat": "iso"
     }
     resp = requests.get(url, params=params).json()
+    if not isinstance(resp, list):
+        print(f"⚠️ Odds API error for {sport_key}: {resp}")
+        return []
+
     events = []
     for e in resp:
-        for bm in e["bookmakers"]:
-            for mkt in bm["markets"]:
-                if mkt["key"] in {m["key"] for m in MARKETS[sport_key]}:
-                    for outcome in mkt["outcomes"]:
+        for bm in e.get("bookmakers", []):
+            for mkt in bm.get("markets", []):
+                if mkt.get("key") in {m["key"] for m in MARKETS.get(sport_key, [])}:
+                    for outcome in mkt.get("outcomes", []):
+                        # Parsear hora de inicio
+                        try:
+                            start = datetime.fromisoformat(
+                                e["commence_time"].replace("Z", "+00:00")
+                            )
+                        except Exception as ex:
+                            print(f"❌ Error parsing time {e.get('commence_time')}: {ex}")
+                            continue
+
                         events.append({
                             "sport":      sport_key,
-                            "home_team":  e["home_team"],
-                            "away_team":  e["away_team"],
-                            "start_time": datetime.fromisoformat(e["commence_time"].replace("Z","+00:00")),
-                            "market":     mkt["key"],
-                            "side":       outcome["name"],
-                            "odds":       outcome["price"]
+                            "home_team":  e.get("home_team"),
+                            "away_team":  e.get("away_team"),
+                            "start_time": start,
+                            "market":     mkt.get("key"),
+                            "side":       outcome.get("name"),
+                            "odds":       outcome.get("price")
                         })
     return events
 
+
 def fetch_stats_football(home, away, start):
-    """(Pendiente) Obtiene win_rate, xg_diff, h2h_rate y form_rate de tu fuente de stats."""
-    # ➔ Aquí harías scraping/API FootyStats
-    return {"win_rate_home":0.65,"xg_diff":0.5,"h2h_rate":0.7,"form_rate":0.6}
+    """
+    Stub para estadísticas de fútbol (win_rate, xg_diff, h2h_rate, form_rate).
+    Aquí implementas tu scraping o API de FootyStats, Sofascore, etc.
+    """
+    return {
+        "win_rate_home": 0.65,
+        "xg_diff":       0.5,
+        "h2h_rate":      0.7,
+        "form_rate":     0.6
+    }
+
 
 def fetch_stats_tennis(p1, p2, start):
-    """(Pendiente) Obtiene win_rate_1, h2h_rate, form_rate para tenis."""
-    # ➔ Scraping/API de ITF/ATP/WTA
-    return {"win_rate_1":0.72,"win_rate_2":0.28,"h2h_rate":0.6,"form_rate":0.7}
+    """
+    Stub para estadísticas de tenis (win_rate_1, win_rate_2, h2h_rate, form_rate).
+    Aquí implementas tu scraping o API de ATP/WTA, ITF, etc.
+    """
+    return {
+        "win_rate_1": 0.72,
+        "win_rate_2": 0.28,
+        "h2h_rate":   0.6,
+        "form_rate":  0.7
+    }
+
 
 def score_event(ev):
-    """Calcula un score 0–100 según WEIGHTS."""
+    """Asigna un score 0–100 al pick según las ponderaciones de WEIGHTS."""
     if ev["sport"] == "soccer":
         st = fetch_stats_football(ev["home_team"], ev["away_team"], ev["start_time"])
         base = (
@@ -65,65 +107,78 @@ def score_event(ev):
         )
     else:
         st = fetch_stats_tennis(ev["home_team"], ev["away_team"], ev["start_time"])
-        fav = st["win_rate_1"] if ev["side"]==ev["home_team"] else st["win_rate_2"]
+        fav = st["win_rate_1"] if ev["side"] == ev["home_team"] else st["win_rate_2"]
         base = (
             fav                * WEIGHTS["win_rate"] +
             st["h2h_rate"]     * WEIGHTS["h2h_rate"] +
             st["form_rate"]    * WEIGHTS["form_rate"]
         )
+
     return round(base * 100, 1)
 
+
 def filter_and_score(events):
-    """Filtra eventos de mañana por cuota + score mínimo y ordena."""
+    """
+    Filtra eventos de mañana por cuota y score mínimo, luego ordena de mayor a menor score.
+    """
     tomorrow = (datetime.utcnow() + timedelta(days=DAYS_AHEAD)).date()
     valid = []
     for ev in events:
         if ev["start_time"].date() != tomorrow:
             continue
-        for cfg in MARKETS[ev["sport"]]:
-            if ev["market"]==cfg["key"] and cfg["min_odd"]<=ev["odds"]<=cfg["max_odd"]:
+        for cfg in MARKETS.get(ev["sport"], []):
+            if ev["market"] == cfg["key"] and cfg["min_odd"] <= ev["odds"] <= cfg["max_odd"]:
                 sc = score_event(ev)
                 if sc >= MIN_SCORE:
                     ev["score"] = sc
                     valid.append(ev)
     return sorted(valid, key=lambda x: x["score"], reverse=True)
 
+
 def build_parlays(picks):
-    """Toma los top 4, arma hasta 2 combinadas cercanas a cuota ≈2.0."""
+    """
+    Toma los 4 mejores picks y arma hasta 2 combinadas con cuota total ≈2.0.
+    """
     combos = []
     top = picks[:4]
-    if len(top)<2:
+    if len(top) < 2:
         return ["🚫 No hay picks suficientes para mañana."]
-    # Combo1: 1+2
-    for i in (0,2):
-        if i+1 < len(top):
-            a,b = top[i], top[i+1]
-            odd = round(a["odds"]*b["odds"],3)
-            if TARGET_PARLAY[0] <= odd <= TARGET_PARLAY[1]:
+    for i in (0, 2):
+        if i + 1 < len(top):
+            a, b = top[i], top[i + 1]
+            combo_odd = round(a["odds"] * b["odds"], 3)
+            if TARGET_PARLAY[0] <= combo_odd <= TARGET_PARLAY[1]:
                 combos.append(
-                  f"🏆 *Combo{i//2+1} ({a['sport']}+{b['sport']}):*\n"
-                  f"• {a['home_team']} vs {a['away_team']} [{a['market']} @ {a['odds']}]\n"
-                  f"• {b['home_team']} vs {b['away_team']} [{b['market']} @ {b['odds']}]\n"
-                  f"*Total:* {odd} _(scores {a['score']:.0f}+{b['score']:.0f})_"
+                    f"🏆 *Combo{i//2+1} ({a['sport']}+{b['sport']}):*\n"
+                    f"• {a['home_team']} vs {a['away_team']} [{a['market']} @ {a['odds']}]\n"
+                    f"• {b['home_team']} vs {b['away_team']} [{b['market']} @ {b['odds']}]\n"
+                    f"*Total:* {combo_odd} _(scores {a['score']:.0f}+{b['score']:.0f})_"
                 )
     if not combos:
         combos = ["🚫 No se encontraron combinadas óptimas."]
     return combos
 
-def main():
-    # 1) Fetch fútbol y tenis
-    ev = fetch_api_events("soccer") + \
-         fetch_api_events("tennis_atp") + \
-         fetch_api_events("tennis_wta")
-    # 2) Filtrar y puntuar
-    scored = filter_and_score(ev)
-    # 3) Crear parlays
-    combos = build_parlays(scored)
-    # 4) Enviar
-    send_telegram(
-      f"*📅 Picks para mañana {(datetime.utcnow()+timedelta(days=1)).date()}:*\n\n"
-      + "\n\n".join(combos)
-    )
 
-if __name__=="__main__":
+def main():
+    # 1) Trae eventos de fútbol y tenis
+    all_events = []
+    for sport in ("soccer", "tennis_atp", "tennis_wta"):
+        all_events += fetch_api_events(sport)
+
+    # 2) Filtra y puntúa
+    scored = filter_and_score(all_events)
+
+    # 3) Construye hasta 2 parlays
+    combos = build_parlays(scored)
+
+    # 4) Envía al bot
+    date_str = (datetime.utcnow() + timedelta(days=1)).date().isoformat()
+    message = (
+        f"*📅 Picks para mañana ({date_str}):*\n\n"
+        + "\n\n".join(combos)
+    )
+    send_telegram(message)
+
+
+if __name__ == "__main__":
     main()
