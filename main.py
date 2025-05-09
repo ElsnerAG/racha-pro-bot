@@ -79,22 +79,20 @@ def fetch_api_events(group_key: str):
     if group_key == "soccer":
         leagues = fetch_sports_by_group("Soccer")
         for lk in leagues:
-            events += fetch_events_for_sport(lk, MARKETS["soccer"])
+            evs = fetch_events_for_sport(lk, MARKETS["soccer"])
+            events += evs
     else:
-        # Para tenis_atp y tennis_wta
         events += fetch_events_for_sport(group_key, MARKETS[group_key])
     return events
 
+# --- Stubs de estadísticas, rellena con scraping/API real ---
 def fetch_stats_football(home, away, start):
-    """Stub: stats de fútbol (win_rate, xg_diff, h2h_rate, form_rate)."""
     return {"win_rate_home":0.65,"xg_diff":0.5,"h2h_rate":0.7,"form_rate":0.6}
 
 def fetch_stats_tennis(p1, p2, start):
-    """Stub: stats de tenis (win_rate_1, win_rate_2, h2h_rate, form_rate)."""
     return {"win_rate_1":0.72,"win_rate_2":0.28,"h2h_rate":0.6,"form_rate":0.7}
 
 def score_event(ev: dict):
-    """Calcula un score 0–100 basado en WEIGHTS, detectando deporte por key."""
     if ev["sport"].startswith("soccer"):
         st = fetch_stats_football(ev["home_team"], ev["away_team"], ev["start_time"])
         base = (
@@ -103,34 +101,25 @@ def score_event(ev: dict):
             st["h2h_rate"]      * WEIGHTS["h2h_rate"] +
             st["form_rate"]     * WEIGHTS["form_rate"]
         )
-    elif ev["sport"].startswith("tennis"):
+    else:
         st = fetch_stats_tennis(ev["home_team"], ev["away_team"], ev["start_time"])
         fav = st["win_rate_1"] if ev["side"] == ev["home_team"] else st["win_rate_2"]
         base = (
-            fav                * WEIGHTS["win_rate"] +
-            st["h2h_rate"]     * WEIGHTS["h2h_rate"] +
-            st["form_rate"]    * WEIGHTS["form_rate"]
+            fav               * WEIGHTS["win_rate"] +
+            st["h2h_rate"]    * WEIGHTS["h2h_rate"] +
+            st["form_rate"]   * WEIGHTS["form_rate"]
         )
-    else:
-        return 0
     return round(base * 100, 1)
 
 def filter_and_score(events: list):
-    """
-    Filtra eventos en las próximas 24 h (hasta NOW + DAYS_AHEAD),
-    por cuota y score, y los ordena de mayor a menor score.
-    """
     now = datetime.utcnow()
     window_end = now + timedelta(days=DAYS_AHEAD)
     valid = []
     for ev in events:
         if not (now <= ev["start_time"] < window_end):
             continue
-        # Determina cfg base
         root = "soccer" if ev["sport"].startswith("soccer") else ev["sport"]
-        if root not in MARKETS:
-            continue
-        for cfg in MARKETS[root]:
+        for cfg in MARKETS.get(root, []):
             if ev["market"] == cfg["key"] and cfg["min_odd"] <= ev["odds"] <= cfg["max_odd"]:
                 sc = score_event(ev)
                 if sc >= MIN_SCORE:
@@ -139,15 +128,12 @@ def filter_and_score(events: list):
     return sorted(valid, key=lambda x: x["score"], reverse=True)
 
 def build_parlays(picks: list):
-    """
-    Toma los 4 mejores picks y arma hasta 2 parlays con cuota ≈2.0.
-    """
     combos = []
     top = picks[:4]
     if len(top) < 2:
         return ["🚫 No hay picks suficientes en la ventana."]
     for i in (0, 2):
-        if i + 1 < len(top):
+        if i+1 < len(top):
             a, b = top[i], top[i+1]
             combo_odd = round(a["odds"] * b["odds"], 3)
             if TARGET_PARLAY[0] <= combo_odd <= TARGET_PARLAY[1]:
@@ -162,18 +148,28 @@ def build_parlays(picks: list):
     return combos
 
 def main():
-    # 1) Traer todos los eventos de fútbol y tenis
-    events = fetch_api_events("soccer") \
-           + fetch_api_events("tennis_atp") \
-           + fetch_api_events("tennis_wta")
+    # 1) Fetch y conteo por deporte
+    soccer_events   = fetch_api_events("soccer")
+    atp_events      = fetch_api_events("tennis_atp")
+    wta_events      = fetch_api_events("tennis_wta")
+
+    # DEBUG: enviar conteos de eventos
+    debug_msg = (
+        f"⚙️ Debug events counts:\n"
+        f"• Soccer: {len(soccer_events)}\n"
+        f"• Tennis ATP: {len(atp_events)}\n"
+        f"• Tennis WTA: {len(wta_events)}"
+    )
+    send_telegram(debug_msg)
 
     # 2) Filtrar y puntuar
-    scored = filter_and_score(events)
+    all_events = soccer_events + atp_events + wta_events
+    scored     = filter_and_score(all_events)
 
     # 3) Construir parlays
     combos = build_parlays(scored)
 
-    # 4) Enviar a Telegram
+    # 4) Enviar resultado final
     now = datetime.utcnow()
     window = f"{now.isoformat()} → {(now + timedelta(days=DAYS_AHEAD)).isoformat()}"
     msg = f"*📅 Picks próximas 24 h ({window} UTC):*\n\n" + "\n\n".join(combos)
