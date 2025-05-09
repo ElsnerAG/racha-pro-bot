@@ -10,7 +10,6 @@ from config import (
     MIN_SCORE
 )
 
-
 def send_telegram(text: str):
     """Envía un mensaje formateado a tu bot de Telegram."""
     token = os.environ["TELEGRAM_TOKEN"]
@@ -21,7 +20,6 @@ def send_telegram(text: str):
         "text": text,
         "parse_mode": "Markdown"
     })
-
 
 def fetch_api_events(sport_key: str):
     """
@@ -68,7 +66,6 @@ def fetch_api_events(sport_key: str):
                         })
     return events
 
-
 def fetch_stats_football(home, away, start):
     """
     Stub para estadísticas de fútbol (win_rate, xg_diff, h2h_rate, form_rate).
@@ -81,7 +78,6 @@ def fetch_stats_football(home, away, start):
         "form_rate":     0.6
     }
 
-
 def fetch_stats_tennis(p1, p2, start):
     """
     Stub para estadísticas de tenis (win_rate_1, win_rate_2, h2h_rate, form_rate).
@@ -93,7 +89,6 @@ def fetch_stats_tennis(p1, p2, start):
         "h2h_rate":   0.6,
         "form_rate":  0.7
     }
-
 
 def score_event(ev):
     """Asigna un score 0–100 al pick según las ponderaciones de WEIGHTS."""
@@ -109,22 +104,23 @@ def score_event(ev):
         st = fetch_stats_tennis(ev["home_team"], ev["away_team"], ev["start_time"])
         fav = st["win_rate_1"] if ev["side"] == ev["home_team"] else st["win_rate_2"]
         base = (
-            fav                * WEIGHTS["win_rate"] +
-            st["h2h_rate"]     * WEIGHTS["h2h_rate"] +
-            st["form_rate"]    * WEIGHTS["form_rate"]
+            fav               * WEIGHTS["win_rate"] +
+            st["h2h_rate"]    * WEIGHTS["h2h_rate"] +
+            st["form_rate"]   * WEIGHTS["form_rate"]
         )
 
     return round(base * 100, 1)
 
-
 def filter_and_score(events):
     """
-    Filtra eventos de mañana por cuota y score mínimo, luego ordena de mayor a menor score.
+    Filtra eventos dentro de las próximas 24 h (ventana de DAYS_AHEAD),
+    con cuota en rango y score >= MIN_SCORE. Luego ordena por score.
     """
-    tomorrow = (datetime.utcnow() + timedelta(days=DAYS_AHEAD)).date()
+    now = datetime.utcnow()
+    window_end = now + timedelta(days=DAYS_AHEAD)
     valid = []
     for ev in events:
-        if ev["start_time"].date() != tomorrow:
+        if not (now <= ev["start_time"] < window_end):
             continue
         for cfg in MARKETS.get(ev["sport"], []):
             if ev["market"] == cfg["key"] and cfg["min_odd"] <= ev["odds"] <= cfg["max_odd"]:
@@ -134,7 +130,6 @@ def filter_and_score(events):
                     valid.append(ev)
     return sorted(valid, key=lambda x: x["score"], reverse=True)
 
-
 def build_parlays(picks):
     """
     Toma los 4 mejores picks y arma hasta 2 combinadas con cuota total ≈2.0.
@@ -142,7 +137,7 @@ def build_parlays(picks):
     combos = []
     top = picks[:4]
     if len(top) < 2:
-        return ["🚫 No hay picks suficientes para mañana."]
+        return ["🚫 No hay picks suficientes para la próxima ventana."]
     for i in (0, 2):
         if i + 1 < len(top):
             a, b = top[i], top[i + 1]
@@ -158,27 +153,26 @@ def build_parlays(picks):
         combos = ["🚫 No se encontraron combinadas óptimas."]
     return combos
 
-
 def main():
-    # 1) Trae eventos de fútbol y tenis
+    # 1) Fetch de fútbol y tenis
     all_events = []
     for sport in ("soccer", "tennis_atp", "tennis_wta"):
         all_events += fetch_api_events(sport)
 
-    # 2) Filtra y puntúa
+    # 2) Filtrado y scoring
     scored = filter_and_score(all_events)
 
-    # 3) Construye hasta 2 parlays
+    # 3) Construcción de parlays
     combos = build_parlays(scored)
 
-    # 4) Envía al bot
-    date_str = (datetime.utcnow() + timedelta(days=1)).date().isoformat()
+    # 4) Envío al bot
+    now = datetime.utcnow()
+    date_window = f"{now.isoformat()} → {(now + timedelta(days=DAYS_AHEAD)).isoformat()}"
     message = (
-        f"*📅 Picks para mañana ({date_str}):*\n\n"
+        f"*📅 Picks próximos 24 h ({date_window} UTC):*\n\n"
         + "\n\n".join(combos)
     )
     send_telegram(message)
-
 
 if __name__ == "__main__":
     main()
