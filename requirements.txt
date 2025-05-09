@@ -1,2 +1,4 @@
 requests
 pandas
+# agregó bs4 si implementas scraping:
+# beautifulsoup4
