@@ -1,19 +1,22 @@
-name: "Generar parlays y enviar a Telegram"
+name: "📲 Picks Automáticos Fútbol + Tenis"
+
 on:
   schedule:
-    - cron: '0 12 * * *'    # Diario a las 12:00 UTC (06:00 Denver)
+    - cron: '0 4 * * *'    # 04:00 UTC = 22:00 MDT (ejecución diaria)
   workflow_dispatch:
 
 jobs:
-  build-and-send:
+  run-picks:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
       - uses: actions/setup-python@v4
-        with:
-          python-version: '3.x'
-      - run: pip install -r requirements.txt
-      - run: python main.py
+        with: { python-version: '3.x' }
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+      - name: Generar y enviar picks
+        run: python main.py
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID:        ${{ secrets.CHAT_ID }}
+          ODDS_API_KEY:   ${{ secrets.ODDS_API_KEY }}
