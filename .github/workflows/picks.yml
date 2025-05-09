@@ -1,0 +1,19 @@
+name: "Generar parlays y enviar a Telegram"
+on:
+  schedule:
+    - cron: '0 12 * * *'    # Diario a las 12:00 UTC (06:00 Denver)
+  workflow_dispatch:
+
+jobs:
+  build-and-send:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+      - run: pip install -r requirements.txt
+      - run: python main.py
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID:        ${{ secrets.CHAT_ID }}
