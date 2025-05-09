@@ -1,6 +1,6 @@
 import os
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from config import (
     SOCCER_LEAGUES,
     TENNIS_TOURNAMENTS,
@@ -13,7 +13,6 @@ from config import (
 )
 
 def send_telegram(text: str):
-    """Envía un mensaje formateado a tu bot de Telegram."""
     token = os.environ["TELEGRAM_TOKEN"]
     chat  = os.environ["CHAT_ID"]
     url   = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -24,7 +23,6 @@ def send_telegram(text: str):
     })
 
 def fetch_events_for_sport(sport_key: str, markets_cfg: list):
-    """Trae eventos y cuotas para un sport_key dado."""
     key = os.environ["ODDS_API_KEY"]
     url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds"
     params = {
@@ -44,7 +42,6 @@ def fetch_events_for_sport(sport_key: str, markets_cfg: list):
             for mkt in bm.get("markets", []):
                 if mkt.get("key") in {m["key"] for m in markets_cfg}:
                     for outcome in mkt.get("outcomes", []):
-                        # parse start time reliably
                         try:
                             start = datetime.fromisoformat(
                                 e["commence_time"].replace("Z", "+00:00")
@@ -62,7 +59,7 @@ def fetch_events_for_sport(sport_key: str, markets_cfg: list):
                         })
     return events
 
-# --- Stubs de estadísticas, implementa aquí tu scraping o API FootyStats/ATP ---
+# --- Stubs de estadísticas, reemplázalos con tu scraping/API real ---
 def fetch_stats_football(home, away, start):
     return {"win_rate_home":0.65,"xg_diff":0.5,"h2h_rate":0.7,"form_rate":0.6}
 
@@ -70,7 +67,6 @@ def fetch_stats_tennis(p1, p2, start):
     return {"win_rate_1":0.72,"win_rate_2":0.28,"h2h_rate":0.6,"form_rate":0.7}
 
 def score_event(ev: dict):
-    """Calcula un score 0–100 basado en WEIGHTS y stats."""
     if ev["sport"] in SOCCER_LEAGUES:
         st = fetch_stats_football(ev["home_team"], ev["away_team"], ev["start_time"])
         base = (
@@ -81,23 +77,21 @@ def score_event(ev: dict):
         )
     else:
         st = fetch_stats_tennis(ev["home_team"], ev["away_team"], ev["start_time"])
-        favour = st["win_rate_1"] if ev["side"] == ev["home_team"] else st["win_rate_2"]
+        fav = st["win_rate_1"] if ev["side"] == ev["home_team"] else st["win_rate_2"]
         base = (
-            favour           * WEIGHTS["win_rate"] +
-            st["h2h_rate"]   * WEIGHTS["h2h_rate"] +
-            st["form_rate"]  * WEIGHTS["form_rate"]
+            fav                * WEIGHTS["win_rate"] +
+            st["h2h_rate"]     * WEIGHTS["h2h_rate"] +
+            st["form_rate"]    * WEIGHTS["form_rate"]
         )
     return round(base * 100, 1)
 
 def filter_and_score(events: list):
-    """Filtra eventos en la próxima ventana y ordena por score."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     window_end = now + timedelta(days=DAYS_AHEAD)
     valid = []
     for ev in events:
         if not (now <= ev["start_time"] < window_end):
             continue
-        # elige la cfg correcta
         root = "soccer" if ev["sport"] in SOCCER_LEAGUES else ev["sport"]
         for cfg in MARKETS.get(root, []):
             if ev["market"] == cfg["key"] and cfg["min_odd"] <= ev["odds"] <= cfg["max_odd"]:
@@ -108,7 +102,6 @@ def filter_and_score(events: list):
     return sorted(valid, key=lambda x: x["score"], reverse=True)
 
 def build_parlays(picks: list):
-    """Toma top 4 picks y crea hasta 2 combos con cuota ≈2.0."""
     combos = []
     top = picks[:4]
     if len(top) < 2:
@@ -116,20 +109,20 @@ def build_parlays(picks: list):
     for i in (0, 2):
         if i+1 < len(top):
             a, b = top[i], top[i+1]
-            combo = round(a["odds"] * b["odds"], 3)
-            if TARGET_PARLAY[0] <= combo <= TARGET_PARLAY[1]:
+            combo_odd = round(a["odds"] * b["odds"], 3)
+            if TARGET_PARLAY[0] <= combo_odd <= TARGET_PARLAY[1]:
                 combos.append(
                     f"🏆 *Combo{i//2+1} ({a['sport']}+{b['sport']}):*\n"
                     f"• {a['home_team']} vs {a['away_team']} [{a['market']} @ {a['odds']}]\n"
                     f"• {b['home_team']} vs {b['away_team']} [{b['market']} @ {b['odds']}]\n"
-                    f"*Total:* {combo} _(scores {a['score']:.0f}+{b['score']:.0f})_"
+                    f"*Total:* {combo_odd} _(scores {a['score']:.0f}+{b['score']:.0f})_"
                 )
     if not combos:
         combos = ["🚫 No se encontraron combinadas óptimas."]
     return combos
 
 def main():
-    # 1) Traer eventos de todas las ligas y torneos definidos
+    # 1) Fetch eventos
     events = []
     for lg in SOCCER_LEAGUES:
         events += fetch_events_for_sport(lg, MARKETS["soccer"])
@@ -139,11 +132,11 @@ def main():
     # 2) Filtrar y puntuar
     scored = filter_and_score(events)
 
-    # 3) Construir parlays
+    # 3) Crear parlays
     combos = build_parlays(scored)
 
-    # 4) Enviar mensaje
-    now = datetime.utcnow()
+    # 4) Enviar a Telegram
+    now = datetime.now(timezone.utc)
     win = f"{now.isoformat()} → {(now + timedelta(days=DAYS_AHEAD)).isoformat()}"
     text = f"*📅 Picks próximas 24 h ({win} UTC):*\n\n" + "\n\n".join(combos)
     send_telegram(text)
